@@ -63,6 +63,16 @@
         </label>
       </section>
 
+      <section class="panel tonight-panel">
+        <div class="panel-head">
+          <h2>今晚桌游串</h2>
+          <span id="tonightStats">0/3 款 · 0/240 分钟</span>
+        </div>
+        <p class="tonight-hint">入选顺序即游玩顺序，最多三款、总时长不超过 240 分钟。</p>
+        <ol id="tonightList" class="tonight-list"></ol>
+        <p id="tonightNotice" class="inline-notice" hidden></p>
+      </section>
+
       <section class="layout">
         <aside class="panel">
           <h2>新增桌游</h2>
@@ -113,6 +123,7 @@
             <span id="visibleCount"></span>
           </div>
           <div id="gameList" class="game-list"></div>
+          <p id="listNotice" class="inline-notice" hidden></p>
         </section>
 
         <aside class="panel detail-panel">

@@ -1,8 +1,11 @@
 const storageKey = "zfl18-boardgame-rule-cards";
+const tonightMaxGames = 3;
+const tonightMaxDuration = 240;
 const today = new Date();
 
 const defaultState = {
   selectedId: "",
+  tonightIds: [],
   games: [
     {
       id: crypto.randomUUID(),
@@ -50,7 +53,11 @@ const defaultState = {
 };
 
 let state = loadState();
+state.tonightIds = sanitizeTonightIds(state.tonightIds);
 if (!state.selectedId) state.selectedId = state.games[0]?.id || "";
+
+// 操作位置的一次性提示，仅存在于内存，不写入本地存档
+const notice = { list: "", detail: "", tonight: "" };
 
 const els = {
   searchInput: document.querySelector("#searchInput"),
@@ -70,7 +77,11 @@ const els = {
   gameCount: document.querySelector("#gameCount"),
   ruleCount: document.querySelector("#ruleCount"),
   staleGame: document.querySelector("#staleGame"),
-  visibleCount: document.querySelector("#visibleCount")
+  visibleCount: document.querySelector("#visibleCount"),
+  tonightList: document.querySelector("#tonightList"),
+  tonightStats: document.querySelector("#tonightStats"),
+  listNotice: document.querySelector("#listNotice"),
+  tonightNotice: document.querySelector("#tonightNotice")
 };
 
 function loadState() {
@@ -85,6 +96,76 @@ function loadState() {
 
 function saveState() {
   localStorage.setItem(storageKey, JSON.stringify(state));
+}
+
+// 清掉已删除或本地存档里失效/重复的编号，顺序紧凑保留
+function sanitizeTonightIds(ids) {
+  if (!Array.isArray(ids)) return [];
+  const validIds = new Set(state.games.map((game) => game.id));
+  return [...new Set(ids.filter((id) => validIds.has(id)))].slice(0, tonightMaxGames);
+}
+
+function getTonightGames() {
+  return state.tonightIds.map((id) => state.games.find((game) => game.id === id)).filter(Boolean);
+}
+
+function getTonightDuration() {
+  return getTonightGames().reduce((sum, game) => sum + game.duration, 0);
+}
+
+function clearNotices() {
+  notice.list = "";
+  notice.detail = "";
+  notice.tonight = "";
+}
+
+function setNotice(element, text) {
+  if (!element) return;
+  element.textContent = text;
+  element.hidden = !text;
+}
+
+// 收进清单：会超数量或时长上限时原样保留清单，仅在操作位置给出原因，不自动挤掉已选
+function addToTonight(id, location) {
+  const game = state.games.find((item) => item.id === id);
+  if (!game) return;
+  clearNotices();
+  if (state.tonightIds.includes(id)) return;
+  if (state.tonightIds.length >= tonightMaxGames) {
+    notice[location] = `清单已满（最多 ${tonightMaxGames} 款），不能再加入「${game.name}」。`;
+    return;
+  }
+  const total = getTonightDuration() + game.duration;
+  if (total > tonightMaxDuration) {
+    notice[location] = `加入「${game.name}」后总时长 ${total} 分钟，超过 ${tonightMaxDuration} 分钟上限，清单保持不变。`;
+    return;
+  }
+  state.tonightIds.push(id);
+  saveState();
+}
+
+function removeFromTonight(id) {
+  state.tonightIds = state.tonightIds.filter((item) => item !== id);
+  clearNotices();
+  saveState();
+}
+
+// 收藏列表和详情共用的收进/移出入口
+function toggleTonight(id, location = "list") {
+  if (state.tonightIds.includes(id)) {
+    removeFromTonight(id);
+  } else {
+    addToTonight(id, location);
+  }
+}
+
+function moveTonight(id, offset) {
+  const index = state.tonightIds.indexOf(id);
+  const target = index + offset;
+  if (index === -1 || target < 0 || target >= state.tonightIds.length) return;
+  [state.tonightIds[index], state.tonightIds[target]] = [state.tonightIds[target], state.tonightIds[index]];
+  clearNotices();
+  saveState();
 }
 
 function daysSince(dateString) {
@@ -131,6 +212,8 @@ function renderList() {
     games
       .map((game) => {
         const selected = game.id === state.selectedId ? "selected" : "";
+        const inTonight = state.tonightIds.includes(game.id);
+        const order = inTonight ? state.tonightIds.indexOf(game.id) + 1 : 0;
         return `
           <article class="game-card ${selected}" data-game-id="${game.id}">
             <div class="cover">
@@ -148,11 +231,41 @@ function renderList() {
                 <span class="pill">${game.duration}分钟</span>
                 <span class="pill heavy">${escapeHtml(game.complexity)}</span>
               </div>
+              <button
+                type="button"
+                class="tonight-toggle ${inTonight ? "is-in" : ""}"
+                data-tonight-id="${game.id}"
+                data-tonight-location="list"
+                aria-pressed="${inTonight}"
+              >${inTonight ? `移出今晚桌游串（第 ${order} 款）` : "收进今晚桌游串"}</button>
             </div>
           </article>
         `;
       })
       .join("") || `<p class="empty">没有符合筛选的桌游。</p>`;
+  setNotice(els.listNotice, notice.list);
+}
+
+function renderTonight() {
+  const games = getTonightGames();
+  const total = games.reduce((sum, game) => sum + game.duration, 0);
+  els.tonightStats.textContent = `${games.length}/${tonightMaxGames} 款 · ${total}/${tonightMaxDuration} 分钟`;
+  els.tonightList.innerHTML =
+    games
+      .map((game, index) => `
+        <li class="tonight-item">
+          <span class="tonight-order">第 ${index + 1} 款</span>
+          <span class="tonight-name" data-tonight-view="${game.id}">${escapeHtml(game.name)}</span>
+          <span class="pill">${game.duration}分钟</span>
+          <span class="tonight-controls">
+            <button type="button" data-tonight-move="${game.id}" data-move-dir="-1" ${index === 0 ? "disabled" : ""} aria-label="上移">↑</button>
+            <button type="button" data-tonight-move="${game.id}" data-move-dir="1" ${index === games.length - 1 ? "disabled" : ""} aria-label="下移">↓</button>
+            <button type="button" data-tonight-remove="${game.id}">移出</button>
+          </span>
+        </li>
+      `)
+      .join("") || `<li class="empty tonight-empty">还没有安排。从收藏列表或详情里收进桌游。</li>`;
+  setNotice(els.tonightNotice, notice.tonight);
 }
 
 function renderDetail() {
@@ -162,6 +275,8 @@ function renderDetail() {
     return;
   }
   state.selectedId = game.id;
+  const inTonight = state.tonightIds.includes(game.id);
+  const tonightOrder = inTonight ? state.tonightIds.indexOf(game.id) + 1 : 0;
   els.detailView.innerHTML = `
     <div class="quick-card">
       <div class="detail-cover">
@@ -175,6 +290,17 @@ function renderDetail() {
           <span class="pill heavy">${escapeHtml(game.complexity)}</span>
           <span class="pill">${daysSince(game.lastPlayed)}天未玩</span>
         </div>
+      </div>
+      <div class="detail-tonight">
+        <button
+          type="button"
+          id="detailTonightBtn"
+          class="tonight-toggle ${inTonight ? "is-in" : ""}"
+          data-tonight-id="${game.id}"
+          data-tonight-location="detail"
+          aria-pressed="${inTonight}"
+        >${inTonight ? `移出今晚桌游串（当前第 ${tonightOrder} 款）` : "收进今晚桌游串"}</button>
+        <p id="detailNotice" class="inline-notice" ${notice.detail ? "" : "hidden"}>${escapeHtml(notice.detail)}</p>
       </div>
       ${renderRuleSection("容易忘的规则", "forgets", game.forgets)}
       ${renderRuleSection("常见争议", "disputes", game.disputes)}
@@ -224,6 +350,7 @@ function renderAll() {
   saveState();
   renderSummary();
   renderList();
+  renderTonight();
   renderDetail();
 }
 
@@ -281,17 +408,57 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-els.searchInput.addEventListener("input", renderAll);
-els.playerFilter.addEventListener("change", renderAll);
-els.complexityFilter.addEventListener("change", renderAll);
-els.sortMode.addEventListener("change", renderAll);
+els.searchInput.addEventListener("input", () => {
+  clearNotices();
+  renderAll();
+});
+els.playerFilter.addEventListener("change", () => {
+  clearNotices();
+  renderAll();
+});
+els.complexityFilter.addEventListener("change", () => {
+  clearNotices();
+  renderAll();
+});
+els.sortMode.addEventListener("change", () => {
+  clearNotices();
+  renderAll();
+});
 els.gameForm.addEventListener("submit", addGame);
 
 els.gameList.addEventListener("click", (event) => {
+  const tonightButton = event.target.closest("[data-tonight-id]");
+  if (tonightButton) {
+    toggleTonight(tonightButton.dataset.tonightId, tonightButton.dataset.tonightLocation);
+    renderAll();
+    return;
+  }
   const card = event.target.closest("[data-game-id]");
   if (!card) return;
   state.selectedId = card.dataset.gameId;
+  clearNotices();
   renderAll();
+});
+
+els.tonightList.addEventListener("click", (event) => {
+  const moveButton = event.target.closest("[data-tonight-move]");
+  if (moveButton && !moveButton.disabled) {
+    moveTonight(moveButton.dataset.tonightMove, Number(moveButton.dataset.moveDir));
+    renderAll();
+    return;
+  }
+  const removeButton = event.target.closest("[data-tonight-remove]");
+  if (removeButton) {
+    removeFromTonight(removeButton.dataset.tonightRemove);
+    renderAll();
+    return;
+  }
+  const viewTarget = event.target.closest("[data-tonight-view]");
+  if (viewTarget) {
+    state.selectedId = viewTarget.dataset.tonightView;
+    clearNotices();
+    renderAll();
+  }
 });
 
 els.detailView.addEventListener("submit", (event) => {
@@ -303,31 +470,45 @@ els.detailView.addEventListener("submit", (event) => {
   const text = document.querySelector("#ruleTextInput").value.trim();
   if (!text) return;
   game[key].push(text);
+  clearNotices();
   renderAll();
 });
 
 els.detailView.addEventListener("click", (event) => {
   const ruleButton = event.target.closest("[data-rule-key]");
+  const tonightButton = event.target.closest("[data-tonight-id]");
   const playedButton = event.target.closest("#playedTodayBtn");
   const deleteButton = event.target.closest("#deleteGameBtn");
   const game = state.games.find((item) => item.id === state.selectedId);
+
+  if (tonightButton) {
+    toggleTonight(tonightButton.dataset.tonightId, tonightButton.dataset.tonightLocation);
+    renderAll();
+    return;
+  }
+
   if (!game) return;
 
   if (ruleButton) {
     const key = ruleButton.dataset.ruleKey;
     const index = Number(ruleButton.dataset.ruleIndex);
     game[key].splice(index, 1);
+    clearNotices();
     renderAll();
   }
 
   if (playedButton) {
     game.lastPlayed = new Date().toISOString().slice(0, 10);
+    clearNotices();
     renderAll();
   }
 
   if (deleteButton) {
     state.games = state.games.filter((item) => item.id !== game.id);
+    // 收藏被移除时同步从清单清掉，顺序保持紧凑
+    state.tonightIds = state.tonightIds.filter((id) => id !== game.id);
     state.selectedId = state.games[0]?.id || "";
+    clearNotices();
     renderAll();
   }
 });
